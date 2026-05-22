@@ -1,0 +1,25 @@
+{
+  "name": "dotx-mqtt-plugin",
+  "version": "1.0.0",
+  "main": "main.ts",
+  "type": "commonjs",
+  "scripts": {
+    "build": "esbuild main.ts --bundle --outfile=main.js --format=cjs --platform=node --target=node16 --minify",
+    "start": "npm run build && node main.js",
+    "dev": "esbuild main.ts --bundle --outfile=main.js --format=cjs --platform=node --target=node16 --watch"
+  },
+  "author": "Andreas Frøyland",
+  "license": "MIT",
+  "description": "MQTT Publisher with Home Assistant integration for Dot X",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ananords/dotx-mqtt-plugin.git"
+  },
+  "dependencies": {
+    "@dotmatrixlabs/dotx-plugin-sdk": "latest",
+    "mqtt": "^5.3.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.6"
+  }
+}

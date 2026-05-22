@@ -1,0 +1,19 @@
+{
+  "id": "mqtt-plugin",
+  "name": "MQTT Publisher",
+  "version": "1.0.0",
+  "description": "Publish device slider values to MQTT with Home Assistant integration",
+  "author": "Andreas Frøyland",
+  "dotxVersion": ">=1.0.0",
+  "main": "main.js",
+  "longDescription": "This plugin publishes device slider values to an MQTT broker in real-time. Features include channel selection, Home Assistant MQTT discovery support, and advanced connection options including SSL/TLS, QoS levels, and rate limiting.",
+  "permissions": [
+    "net"
+  ],
+  "license": "MIT",
+  "repository": "https://github.com/ananords/dotx-mqtt-plugin",
+  "links": {
+    "homepage": "https://github.com/ananords/dotx-mqtt-plugin",
+    "bugs": "https://github.com/ananords/dotx-mqtt-plugin/issues"
+  }
+}
