@@ -24,20 +24,13 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Create plugin zip
-        run: |
-          mkdir -p dist
-          zip -r dist/plugin.zip \
-            manifest.json \
-            main.js \
-            README.md \
-            LICENSE \
-            --exclude "*.ts" "node_modules/*" ".github/*"
+      - name: Package plugin
+        run: npx @dotmatrixlabs/dotx-plugin-sdk@latest package
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/plugin.zip
+          files: dist/*.dotx
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
