@@ -7,12 +7,13 @@ import { MQTTSettings, ConnectionState } from './types';
 export function buildSettingsUI(
   settings: SettingsBuilder,
   currentSettings: MQTTSettings,
-  connectionState: ConnectionState,
+  getConnectionState: () => ConnectionState,
   onSave: (settings: MQTTSettings) => void,
   onConnect: () => void,
   onDisconnect: () => void,
-  channelButton: any
+  channelButton: { getSelectedMap(): Record<string, boolean> }
 ) {
+  const connectionState = getConnectionState();
   // Track settings changes locally and autosave
   const localSettings: Partial<MQTTSettings> = { ...currentSettings };
 
@@ -38,10 +39,12 @@ export function buildSettingsUI(
 
   // Connect/Disconnect Button
   const connectionButton = settings.addButton('connectionButton')
-    .setTitle(connectionState === 'connected' ? 'Disconnect' : 'Connect')
-    .setStyle(connectionState === 'connected' ? 'danger' : 'success')
+    .setTitle(getButtonTitle(connectionState))
+    .setStyle(getButtonStyle(connectionState))
     .onClick(() => {
-      if (connectionState === 'connected') {
+      // Read the live state: the builder runs once, so a captured value goes stale.
+      const state = getConnectionState();
+      if (state === 'connected' || state === 'connecting') {
         onDisconnect();
       } else {
         onConnect();
@@ -55,7 +58,7 @@ export function buildSettingsUI(
     .setPlaceholder('192.168.1.100')
     .setValue(currentSettings.brokerIP)
     .setRequired(true)
-    .setDesc('IP address of the MQTT broker')
+    .setDesc('IP address or hostname of the MQTT broker. Connection changes apply on the next Connect.')
     .onChange((data) => {
       localSettings.brokerIP = data.value;
       autosave();
@@ -263,7 +266,6 @@ export function buildSettingsUI(
 
   // Function to get a string list of selected channels
   function updateChannelsSelectedList(channelSelectionMode: 'all' | 'button') {
-    console.log('channelSelectionMode', channelSelectionMode);
     if (channelSelectionMode === 'all') {
       channelsSelectedList.setText('All channels');
     } else {
@@ -293,10 +295,10 @@ export function buildSettingsUI(
       localSettings.homeAssistantEnabled = data.value;
       // Update info text based on state
       if (data.value) {
-        haInfoText.setText('When enabled, sensors will be automatically created in Home Assistant for each active channel. Each channel will appear as a separate sensor entity.');
+        haInfoText.setText(HA_ON_TEXT);
         haInfoText.setStyle('info');
       } else {
-        haInfoText.setText('Home Assistant discovery is currently disabled. Enable it to automatically create sensor entities.');
+        haInfoText.setText(HA_OFF_TEXT);
         haInfoText.setStyle('default');
       }
       autosave();
@@ -305,8 +307,8 @@ export function buildSettingsUI(
   // HA Info Text
   const haInfoText = settings.addInfo('haInfo')
     .setText(currentSettings.homeAssistantEnabled
-      ? 'When enabled, sensors will be automatically created in Home Assistant for each active channel. Each channel will appear as a separate sensor entity.'
-      : 'Home Assistant discovery is currently disabled. Enable it to automatically create sensor entities.')
+      ? HA_ON_TEXT
+      : HA_OFF_TEXT)
     .setStyle(currentSettings.homeAssistantEnabled ? 'info' : 'default');
 
   // ===== STARTUP SECTION =====
@@ -330,13 +332,26 @@ export function buildSettingsUI(
     updateConnectionState: (state: ConnectionState) => {
       statusBadge.setText(getStatusText(state));
       statusBadge.setStyle(getStatusStyle(state));
-      connectionButton.setTitle(state === 'connected' ? 'Disconnect' : 'Connect');
-      connectionButton.setStyle(state === 'connected' ? 'danger' : 'success');
+      connectionButton.setTitle(getButtonTitle(state));
+      connectionButton.setStyle(getButtonStyle(state));
     },
     updateChannelsSelectedList: () => {
       updateChannelsSelectedList(localSettings.channelSelectionMode as 'all' | 'button' || currentSettings.channelSelectionMode);
     }
   };
+}
+
+const HA_ON_TEXT = 'Each channel appears in Home Assistant as a sensor under one "Dot X" device (via MQTT discovery). Entities show as unavailable while Dot X is closed. Turning this off removes them.';
+const HA_OFF_TEXT = 'Home Assistant discovery is disabled. Enable it to automatically create sensor entities.';
+
+function getButtonTitle(state: ConnectionState): string {
+  if (state === 'connected') return 'Disconnect';
+  if (state === 'connecting') return 'Cancel';
+  return 'Connect';
+}
+
+function getButtonStyle(state: ConnectionState): 'primary' | 'danger' {
+  return state === 'connected' || state === 'connecting' ? 'danger' : 'primary';
 }
 
 function getStatusText(state: ConnectionState): string {

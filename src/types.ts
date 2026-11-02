@@ -33,8 +33,14 @@ export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'err
 export interface HASensorConfig {
   name: string;
   unique_id: string;
+  object_id: string;
   state_topic: string;
+  availability_topic: string;
+  payload_available: string;
+  payload_not_available: string;
   unit_of_measurement: string;
+  state_class: string;
+  icon: string;
   value_template: string;
   device: {
     identifiers: string[];
@@ -44,11 +50,20 @@ export interface HASensorConfig {
   };
 }
 
+/**
+ * Payload Dot X actually sends on `plugin.device_update`.
+ *
+ * Dot X emits `{ changes, sliders }`: `changes` contains one entry per slider
+ * (including unchanged ones) with values already scaled to 0-100. The SDK's
+ * `DeviceChanges` type declares a `values` array that the app never sends,
+ * so don't rely on it.
+ */
 export interface DeviceUpdateData {
   changes: Array<{
     index: number;
     oldValue: number;
     newValue: number;
   }>;
-  values: Array<{ value: number }>;
+  sliders?: number[];
+  values?: Array<{ value: number }>;
 }

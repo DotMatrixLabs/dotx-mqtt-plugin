@@ -21,9 +21,9 @@ Install directly through the Dot X plugin marketplace.
 
 ### Manual Installation
 
-1. Download the latest `plugin.zip` from the [Releases](https://github.com/ananords/dotx-mqtt-plugin/releases) page
-2. Extract to your Dot X plugins directory
-3. Restart Dot X and enable the plugin in plugin settings
+1. Download the latest `mqtt-plugin.dotxplugin` from the [Releases](https://github.com/ananords/dotx-mqtt-plugin/releases) page
+2. Install it from the Dot X plugin settings
+3. Enable the plugin, set your broker address, and press **Connect**
 
 ## Configuration
 
@@ -55,33 +55,35 @@ Install directly through the Dot X plugin marketplace.
 
 ### Home Assistant Integration
 
-Enable **Home Assistant Discovery** to automatically create sensor entities in Home Assistant.
+Requires the [MQTT integration](https://www.home-assistant.io/integrations/mqtt/) in Home Assistant, pointed at the same broker (e.g. the Mosquitto add-on).
 
-When enabled:
-- Discovery topic: `homeassistant/sensor/dotx_device/ch{X}/config`
-- State topic: `{topic_prefix}/channel/{X}`
-- Each sensor shows the slider value as a percentage
+Enable **Home Assistant Discovery** and each channel shows up as a sensor (0-100 %) under one **Dot X** device:
+
+- Discovery topic: `homeassistant/sensor/dotx_device/ch{index}/config` (retained)
+- Entities are created on the first slider movement after connecting (Dot X reports every channel on each update).
+- While Dot X is closed or loses connection, entities show as **unavailable** (they are not deleted).
+- When Home Assistant restarts, discovery is re-sent automatically (`homeassistant/status`).
+- Turning the switch off removes the entities from Home Assistant.
 
 ## MQTT Topics
 
-### Standard Mode
+| Topic | Payload | Retained |
+|---|---|---|
+| `{topic_prefix}/channel/{index}` | `{"value": 75}` (0-100) | yes |
+| `{topic_prefix}/status` | `online` / `offline` (offline is also the LWT) | yes |
 
-```
-{topic_prefix}/channel/{channel_index}
-```
+`{index}` is the 0-based channel index (channel 1 in Dot X is `channel/0`). Only channels whose value changed are published. The publish rate limit applies per channel, and the last value is always delivered.
 
-Payload:
-```json
-{ "value": "75.50" }
-```
+Connection settings (broker, port, credentials, topic prefix) apply the next time you press **Connect**.
 
 ## Development
 
 ```bash
 npm install
-npm run build   # one-shot build
-npm run dev     # watch mode
-npm start       # build + run
+npm run build      # one-shot build of main.js
+npm run dev        # watch mode
+npm run typecheck  # tsc --noEmit
+npm run package    # build + dist/mqtt-plugin.dotxplugin
 ```
 
 ### Release
@@ -94,7 +96,7 @@ git tag v1.0.0
 git push --tags
 ```
 
-GitHub Actions will build `dist/plugin.zip` and attach it to the release.
+GitHub Actions verifies the tag matches the manifest/package version, then builds `dist/mqtt-plugin.dotxplugin` and attaches it to the release.
 
 ## License
 

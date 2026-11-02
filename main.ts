@@ -1,337 +1,220 @@
 import Plugin, { runPlugin } from "@dotmatrixlabs/dotx-plugin-sdk";
 import { MQTTClient } from "./src/mqtt-client";
-import { HomeAssistantDiscovery } from "./src/homeassistant";
+import { HomeAssistantDiscovery, HA_STATUS_TOPIC } from "./src/homeassistant";
 import { buildSettingsUI } from "./src/settings";
 import { MQTTSettings, ConnectionState, DeviceUpdateData } from "./src/types";
+
+type SystemUtilButtonHandle = ReturnType<Plugin["actionmapper"]["addSystemUtilButton"]>;
 
 export default class MQTTPlugin extends Plugin {
   private settings!: MQTTSettings;
   private mqttClient!: MQTTClient;
   private haDiscovery!: HomeAssistantDiscovery;
-  private channelButton: any; // SystemUtilButton handle
-  private connectionState: ConnectionState = 'disconnected';
+  private channelButton!: SystemUtilButtonHandle;
   private settingsUIUpdateFn?: (state: ConnectionState) => void;
   private updateChannelsListFn?: () => void;
+
+  /** Latest known value (0-100) per channel index. */
+  private channelValues: number[] = [];
+  /** Whether we have been connected since the last error toast. */
+  private errorToastShown = false;
+  private wasConnected = false;
 
   async onLoad() {
     console.log("[MQTT Plugin] Loading...");
 
-    // Initialize config
     this.initConfig();
     this.loadSettings();
 
-    // Initialize MQTT client
     this.mqttClient = new MQTTClient(this.settings);
+    this.haDiscovery = new HomeAssistantDiscovery(this.mqttClient, this.settings.topicPrefix);
 
-    // Initialize Home Assistant discovery
-    this.haDiscovery = new HomeAssistantDiscovery(
-      this.mqttClient,
-      this.settings.topicPrefix,
-      'DotX Device',
-      'dotx_device'
-    );
-
-    // Set up connection state callback
-    this.mqttClient.onConnectionChange((state, error) => {
-      this.connectionState = state;
-      console.log(`[MQTT Plugin] Connection state: ${state}`, error || '');
-
-      // Update UI
-      if (this.settingsUIUpdateFn) {
-        this.settingsUIUpdateFn(state);
-      }
-
-      // Show toast notifications
-      if (state === 'connected') {
-        this.ui.showToast({
-          message: 'Connected to MQTT broker',
-          type: 'success',
-          duration: 3000
-        });
-
-        // Publish HA discovery if enabled
-        if (this.settings.homeAssistantEnabled) {
-          this.publishHomeAssistantDiscovery();
-        }
-      } else if (state === 'disconnected') {
-        this.ui.showToast({
-          message: 'Disconnected from MQTT broker',
-          type: 'info',
-          duration: 3000
-        });
-      } else if (state === 'error') {
-        this.ui.showToast({
-          message: `MQTT connection error: ${error || 'Unknown error'}`,
-          type: 'error',
-          duration: 5000
-        });
+    this.mqttClient.onConnectionChange((state, error) => this.handleConnectionChange(state, error));
+    this.mqttClient.onMessage((topic, payload) => {
+      // Home Assistant announces itself after a restart; re-send discovery.
+      if (topic === HA_STATUS_TOPIC && payload === 'online' && this.settings.homeAssistantEnabled) {
+        console.log("[MQTT Plugin] Home Assistant came online, re-publishing discovery");
+        this.haDiscovery.reset();
+        this.publishAllKnownChannels();
       }
     });
 
-    // Add system utility button for channel selection (before settings UI)
     this.channelButton = this.actionmapper
       .addSystemUtilButton('mqttChannelSelect')
       .setTitle('MQTT Channel')
       .setIcon('fas fa-lg fa-network-wired')
-      .setHidden(this.settings.channelSelectionMode === 'all') // Hide if in "all" mode
+      .setHidden(this.settings.channelSelectionMode === 'all')
       .onClick(({ selected, channel }) => {
         console.log(`[MQTT Plugin] Channel ${channel} ${selected ? 'selected' : 'deselected'}`);
-        // Update the settings UI channel list dynamically
-        if (this.updateChannelsListFn) {
-          this.updateChannelsListFn();
+        const index = Number(channel);
+        if (selected && Number.isInteger(index) && this.channelValues[index] !== undefined) {
+          this.publishChannel(index, this.channelValues[index]);
         }
+        this.updateChannelsListFn?.();
       });
 
-    // Build settings UI
     await this.settingsPage.addSettings((settings) => {
       const ui = buildSettingsUI(
         settings,
         this.settings,
-        this.connectionState,
+        () => this.mqttClient.getState(),
         (newSettings) => this.handleSaveSettings(newSettings),
         () => this.handleConnect(),
         () => this.handleDisconnect(),
         this.channelButton
       );
-
-      // Store update functions for later use
       this.settingsUIUpdateFn = ui.updateConnectionState;
       this.updateChannelsListFn = ui.updateChannelsSelectedList;
     });
 
+    this.device.onUpdate((data) => this.handleDeviceUpdate(data as unknown as DeviceUpdateData));
 
-
-    // Listen for device updates
-    this.device.onUpdate((data) => {
-      this.handleDeviceUpdate(data);
-    });
-
-    // Auto-connect if enabled
     if (this.settings.autoConnect) {
       console.log("[MQTT Plugin] Auto-connecting...");
-      setTimeout(() => {
-        this.handleConnect();
-      }, 1000);
+      this.handleConnect();
     }
 
     console.log("[MQTT Plugin] Loaded successfully!");
   }
 
-  private async handleDeviceUpdate(data: DeviceUpdateData) {
-    // Only process if device is connected
-    const deviceConnected = await this.device.isConnected();
-    if (!deviceConnected) {
-      return;
+  private handleConnectionChange(state: ConnectionState, error?: string) {
+    console.log(`[MQTT Plugin] Connection state: ${state}`, error || '');
+    this.settingsUIUpdateFn?.(state);
+
+    if (state === 'connected') {
+      this.wasConnected = true;
+      this.errorToastShown = false;
+      this.toast({ message: 'Connected to MQTT broker', type: 'success', duration: 3000 });
+      if (this.settings.homeAssistantEnabled) {
+        this.mqttClient.subscribe(HA_STATUS_TOPIC);
+        this.haDiscovery.reset();
+      }
+      this.publishAllKnownChannels();
+    } else if (state === 'disconnected' && this.wasConnected) {
+      this.wasConnected = false;
+      this.toast({ message: 'Disconnected from MQTT broker', type: 'info', duration: 3000 });
+    } else if (state === 'error' && !this.errorToastShown) {
+      this.errorToastShown = true;
+      this.wasConnected = false;
+      this.toast({
+        message: `MQTT connection error: ${error || 'Unknown error'}`,
+        type: 'error',
+        duration: 5000,
+      });
+    }
+  }
+
+  /** Toast without risking an unhandled rejection (fatal under Deno). */
+  private toast(params: Parameters<Plugin["ui"]["showToast"]>[0]) {
+    this.ui.showToast(params).catch((error) => console.error("[MQTT Plugin] Toast failed:", error));
+  }
+
+  private handleDeviceUpdate(data: DeviceUpdateData) {
+    // Dot X sends every slider in `changes` on each update; publish only the
+    // ones that actually moved. (`values` from the SDK type is never sent.)
+    const changes = Array.isArray(data?.changes) ? data.changes : [];
+    for (const { index, newValue } of changes) {
+      if (!Number.isInteger(index) || typeof newValue !== 'number') continue;
+      if (this.channelValues[index] === newValue) continue;
+      this.channelValues[index] = newValue;
+      this.publishChannel(index, newValue);
+    }
+  }
+
+  private isChannelEnabled(index: number): boolean {
+    return this.settings.channelSelectionMode === 'all' || this.channelButton.isSelected(index);
+  }
+
+  private publishChannel(index: number, value: number) {
+    if (!this.mqttClient.isConnected() || !this.isChannelEnabled(index)) return;
+
+    if (this.settings.homeAssistantEnabled) {
+      this.haDiscovery.ensureDiscovered(index).catch((error) =>
+        console.error(`[MQTT Plugin] HA discovery for channel ${index} failed:`, error)
+      );
     }
 
-    // Only process if MQTT client is connected
-    if (!this.mqttClient.isConnected()) {
-      return;
-    }
+    const topic = `${this.settings.topicPrefix}/channel/${index}`;
+    this.mqttClient.publish(topic, JSON.stringify({ value }), { retain: true });
+  }
 
-    // Debug logging to investigate channel indexing issue
-    console.log('[MQTT Plugin] Device update received:', {
-      changesCount: data.changes.length,
-      changes: data.changes.map(c => ({ index: c.index, oldValue: c.oldValue, newValue: c.newValue })),
-      valuesCount: data.values.length,
-      values: data.values.map((v, i) => ({ arrayIndex: i, value: v.value }))
+  /** Re-send discovery and the current value of every known channel. */
+  private publishAllKnownChannels() {
+    this.channelValues.forEach((value, index) => {
+      if (value !== undefined) this.publishChannel(index, value);
     });
+  }
 
-    // Check if all changes have index 0 (bug workaround)
-    const allChangesHaveIndexZero = data.changes.length > 0 && data.changes.every(c => c.index === 0);
-    const hasMultipleValues = data.values.length > 1;
-
-    // In 'all' mode: publish all channel values whenever any change occurs
-    // This also works around the bug where change.index is always 0
-    if (this.settings.channelSelectionMode === 'all') {
-      console.log('[MQTT Plugin] "All channels" mode - publishing all values from data.values array');
-      for (let i = 0; i < data.values.length; i++) {
-        const channelIndex = i;
-        const value = data.values[i].value;
-
-        try {
-          // Publish to MQTT
-          if (this.settings.homeAssistantEnabled) {
-            // Use Home Assistant discovery
-            await this.haDiscovery.publishState(channelIndex, value);
-          } else {
-            // Standard MQTT publish
-            const topic = `${this.settings.topicPrefix}/channel/${channelIndex}`;
-            const payload = JSON.stringify({ value: value.toFixed(2) });
-            await this.mqttClient.publish(topic, payload);
-          }
-        } catch (error) {
-          console.error(`[MQTT Plugin] Error publishing channel ${channelIndex}:`, error);
-        }
-      }
-      return; // Exit early since we've published all values
-    }
-
-    // Button mode: only publish selected channels that changed
-    // If we detect the index bug (all changes are index 0), try to match by value
-    if (allChangesHaveIndexZero && hasMultipleValues) {
-      console.log('[MQTT Plugin] Detected index bug in button mode - attempting to match changes by value');
-      // Try to match each change's newValue with values array to find correct index
-      for (const change of data.changes) {
-        // Find which channel in values array matches this change's newValue
-        const matchingIndex = data.values.findIndex(v => Math.abs(v.value - change.newValue) < 0.01);
-        const channelIndex = matchingIndex >= 0 ? matchingIndex : change.index; // Fallback to change.index if no match
-        const value = change.newValue;
-
-        console.log(`[MQTT Plugin] Processing change: matched channelIndex=${channelIndex}, value=${value}`);
-
-        // Only publish if this channel is selected
-        if (!this.channelButton.isSelected(channelIndex)) {
-          continue; // Skip unselected channels
-        }
-
-        try {
-          if (this.settings.homeAssistantEnabled) {
-            await this.haDiscovery.publishState(channelIndex, value);
-          } else {
-            const topic = `${this.settings.topicPrefix}/channel/${channelIndex}`;
-            const payload = JSON.stringify({ value: value.toFixed(2) });
-            await this.mqttClient.publish(topic, payload);
-          }
-        } catch (error) {
-          console.error(`[MQTT Plugin] Error publishing channel ${channelIndex}:`, error);
-        }
-      }
-      return; // Exit early
-    }
-
-    // Normal processing: iterate through changes (when indices are correct)
-    for (const change of data.changes) {
-      const channelIndex = change.index;
-      const value = change.newValue;
-
-      console.log(`[MQTT Plugin] Processing change: channelIndex=${channelIndex}, value=${value}`);
-
-      // In button mode, only publish selected channels
-      if (!this.channelButton.isSelected(channelIndex)) {
-        continue; // Skip unselected channels
-      }
-
-      try {
-        if (this.settings.homeAssistantEnabled) {
-          await this.haDiscovery.publishState(channelIndex, value);
-        } else {
-          const topic = `${this.settings.topicPrefix}/channel/${channelIndex}`;
-          const payload = JSON.stringify({ value: value.toFixed(2) });
-          await this.mqttClient.publish(topic, payload);
-        }
-      } catch (error) {
-        console.error(`[MQTT Plugin] Error publishing channel ${channelIndex}:`, error);
-      }
-    }
+  private knownChannels(): number[] {
+    return this.channelValues.map((v, i) => (v === undefined ? -1 : i)).filter((i) => i >= 0);
   }
 
   private handleSaveSettings(newSettings: MQTTSettings) {
-    console.log("[MQTT Plugin] Saving settings...");
-
-    // Update settings
+    const previous = this.settings;
     this.settings = newSettings;
     this.config.set('settings', this.settings);
 
-    // Update MQTT client settings
     this.mqttClient.updateSettings(this.settings);
-
-    // Update HA discovery topic prefix
     this.haDiscovery.updateTopicPrefix(this.settings.topicPrefix);
-
-    // Update button visibility based on channel selection mode
-    // Hide button when "publish all" mode is active, show when "button" mode is active
     this.channelButton.setHidden(this.settings.channelSelectionMode === 'all');
 
-    this.ui.showToast({
-      message: 'Settings saved successfully',
-      type: 'success',
-      duration: 1000
-    });
+    // Apply Home Assistant toggle immediately when connected.
+    if (this.mqttClient.isConnected() && previous.homeAssistantEnabled !== newSettings.homeAssistantEnabled) {
+      if (newSettings.homeAssistantEnabled) {
+        this.mqttClient.subscribe(HA_STATUS_TOPIC);
+        this.haDiscovery.reset();
+        this.publishAllKnownChannels();
+      } else {
+        this.mqttClient.unsubscribe(HA_STATUS_TOPIC);
+        this.haDiscovery.removeDiscoveryForChannels(this.knownChannels()).catch((error) =>
+          console.error("[MQTT Plugin] Removing HA discovery failed:", error)
+        );
+      }
+    }
   }
 
-  private async handleConnect() {
-    console.log("[MQTT Plugin] Connecting to MQTT broker...");
-
-    try {
-      await this.mqttClient.connect();
-    } catch (error) {
-      console.error("[MQTT Plugin] Connection failed:", error);
-      // Toast is shown by connection state callback
-    }
+  private handleConnect() {
+    console.log(`[MQTT Plugin] Connecting to ${this.settings.brokerIP}:${this.settings.brokerPort}...`);
+    this.errorToastShown = false;
+    this.mqttClient.connect();
   }
 
   private async handleDisconnect() {
     console.log("[MQTT Plugin] Disconnecting from MQTT broker...");
-
     try {
-      // Remove HA discovery if enabled
-      if (this.settings.homeAssistantEnabled) {
-        await this.haDiscovery.removeAllDiscoveries();
-      }
-
       await this.mqttClient.disconnect();
     } catch (error) {
       console.error("[MQTT Plugin] Disconnect failed:", error);
     }
   }
 
-  private async publishHomeAssistantDiscovery() {
-    console.log("[MQTT Plugin] Publishing Home Assistant discovery...");
-
-    // Check if device is connected
-    const deviceConnected = await this.device.isConnected();
-    if (!deviceConnected) {
-      console.log("[MQTT Plugin] Device not connected, skipping HA discovery");
-      return;
-    }
-
-    try {
-      // Get connected device information
-      const devices = await this.device.getConnected();
-      const deviceInfo = devices.length > 0 ? devices[0] : null;
-
-      if (deviceInfo) {
-        console.log("[MQTT Plugin] Publishing HA discovery for device:", deviceInfo.name);
-
-        // Update HA discovery with actual device info
-        this.haDiscovery.updateDeviceInfo(deviceInfo.name, deviceInfo.port);
-      }
-
-      // Publish discovery for channels 0-4
-      const channels = Array.from({ length: 5 }, (_, i) => i);
-      await this.haDiscovery.publishDiscoveryForChannels(channels);
-
-      console.log("[MQTT Plugin] Home Assistant discovery published");
-    } catch (error) {
-      console.error("[MQTT Plugin] Error publishing HA discovery:", error);
-    }
-  }
-
   private loadSettings() {
-    const savedSettings = this.config.get('settings');
-
-    // Generate random client ID if not set
-    const clientId = savedSettings?.clientId || `dotx-mqtt-${Math.random().toString(36).substr(2, 9)}`;
+    const saved = this.config.get('settings') || {};
+    const num = (v: unknown, fallback: number) => (typeof v === 'number' && Number.isFinite(v) ? v : fallback);
 
     this.settings = {
-      brokerIP: savedSettings?.brokerIP || '192.168.1.100',
-      brokerPort: savedSettings?.brokerPort || 1883,
-      topicPrefix: savedSettings?.topicPrefix || 'dotx',
-      username: savedSettings?.username || '',
-      password: savedSettings?.password || '',
-      clientId: clientId,
-      useSsl: savedSettings?.useSsl || false,
-      keepalive: savedSettings?.keepalive || 60,
-      qos: savedSettings?.qos || 0,
-      cleanSession: savedSettings?.cleanSession !== false,
-      autoReconnect: savedSettings?.autoReconnect !== false,
-      reconnectInterval: savedSettings?.reconnectInterval || 5,
-      publishRateLimit: savedSettings?.publishRateLimit || 100,
-      homeAssistantEnabled: savedSettings?.homeAssistantEnabled || false,
-      channelSelectionMode: savedSettings?.channelSelectionMode || 'all',
-      autoConnect: savedSettings?.autoConnect || false
+      brokerIP: saved.brokerIP || '192.168.1.100',
+      brokerPort: num(saved.brokerPort, 1883) || 1883,
+      topicPrefix: saved.topicPrefix || 'dotx',
+      username: saved.username || '',
+      password: saved.password || '',
+      clientId: saved.clientId || `dotx-mqtt-${Math.random().toString(36).slice(2, 11)}`,
+      useSsl: saved.useSsl === true,
+      keepalive: num(saved.keepalive, 60),
+      qos: ([0, 1, 2].includes(saved.qos) ? saved.qos : 0) as 0 | 1 | 2,
+      cleanSession: saved.cleanSession !== false,
+      autoReconnect: saved.autoReconnect !== false,
+      reconnectInterval: num(saved.reconnectInterval, 5) || 5,
+      publishRateLimit: num(saved.publishRateLimit, 100),
+      homeAssistantEnabled: saved.homeAssistantEnabled === true,
+      channelSelectionMode: saved.channelSelectionMode === 'button' ? 'button' : 'all',
+      autoConnect: saved.autoConnect === true,
     };
+
+    // Persist a generated client ID so it is stable across restarts.
+    if (saved.clientId !== this.settings.clientId) {
+      this.config.set('settings', this.settings);
+    }
   }
 
   private initConfig() {
@@ -340,107 +223,36 @@ export default class MQTTPlugin extends Plugin {
         settings: {
           type: "object",
           properties: {
-            brokerIP: {
-              type: "string",
-              default: "192.168.1.100",
-              description: "MQTT broker IP address"
-            },
-            brokerPort: {
-              type: "number",
-              default: 1883,
-              description: "MQTT broker port"
-            },
-            topicPrefix: {
-              type: "string",
-              default: "dotx",
-              description: "Base topic prefix"
-            },
-            username: {
-              type: "string",
-              default: "",
-              description: "MQTT username"
-            },
-            password: {
-              type: "string",
-              default: "",
-              description: "MQTT password"
-            },
-            clientId: {
-              type: "string",
-              default: "",
-              description: "MQTT client ID"
-            },
-            useSsl: {
-              type: "boolean",
-              default: false,
-              description: "Use SSL/TLS"
-            },
-            keepalive: {
-              type: "number",
-              default: 60,
-              description: "Keepalive interval in seconds"
-            },
-            qos: {
-              type: "number",
-              default: 0,
-              description: "Quality of Service level"
-            },
-            cleanSession: {
-              type: "boolean",
-              default: true,
-              description: "Clean session flag"
-            },
-            autoReconnect: {
-              type: "boolean",
-              default: true,
-              description: "Auto reconnect on connection loss"
-            },
-            reconnectInterval: {
-              type: "number",
-              default: 5,
-              description: "Reconnect interval in seconds"
-            },
-            publishRateLimit: {
-              type: "number",
-              default: 100,
-              description: "Publish rate limit in milliseconds"
-            },
-            homeAssistantEnabled: {
-              type: "boolean",
-              default: false,
-              description: "Enable Home Assistant discovery"
-            },
-            channelSelectionMode: {
-              type: "string",
-              default: "all",
-              description: "Channel selection mode: all or button"
-            },
-            autoConnect: {
-              type: "boolean",
-              default: false,
-              description: "Auto connect on startup"
-            }
-          }
-        }
-      }
+            brokerIP: { type: "string", default: "192.168.1.100", description: "MQTT broker IP address" },
+            brokerPort: { type: "number", default: 1883, description: "MQTT broker port" },
+            topicPrefix: { type: "string", default: "dotx", description: "Base topic prefix" },
+            username: { type: "string", default: "", description: "MQTT username" },
+            password: { type: "string", default: "", description: "MQTT password" },
+            clientId: { type: "string", default: "", description: "MQTT client ID" },
+            useSsl: { type: "boolean", default: false, description: "Use SSL/TLS" },
+            keepalive: { type: "number", default: 60, description: "Keepalive interval in seconds" },
+            qos: { type: "number", default: 0, description: "Quality of Service level" },
+            cleanSession: { type: "boolean", default: true, description: "Clean session flag" },
+            autoReconnect: { type: "boolean", default: true, description: "Auto reconnect on connection loss" },
+            reconnectInterval: { type: "number", default: 5, description: "Reconnect interval in seconds" },
+            publishRateLimit: { type: "number", default: 100, description: "Publish rate limit in milliseconds" },
+            homeAssistantEnabled: { type: "boolean", default: false, description: "Enable Home Assistant discovery" },
+            channelSelectionMode: { type: "string", default: "all", description: "Channel selection mode: all or button" },
+            autoConnect: { type: "boolean", default: false, description: "Auto connect on startup" },
+          },
+        },
+      },
     });
   }
 
   async onUnload() {
     console.log("[MQTT Plugin] Unloading...");
-
     try {
-      // Remove HA discovery if enabled
-      if (this.settings.homeAssistantEnabled && this.mqttClient.isConnected()) {
-        await this.haDiscovery.removeAllDiscoveries();
-      }
-
-      // Disconnect from MQTT
+      // Publishes "offline" so HA marks entities unavailable rather than deleting them.
       await this.mqttClient.disconnect();
     } catch (error) {
       console.error("[MQTT Plugin] Error during unload:", error);
     }
-
     console.log("[MQTT Plugin] Unloaded");
   }
 }
