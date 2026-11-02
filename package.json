@@ -1,12 +1,15 @@
 {
   "name": "dotx-mqtt-plugin",
   "version": "1.0.0",
-  "main": "main.ts",
+  "main": "main.js",
   "type": "commonjs",
   "scripts": {
     "build": "esbuild main.ts --bundle --outfile=main.js --format=cjs --platform=node --target=node16 --minify",
-    "start": "npm run build && node main.js",
-    "dev": "esbuild main.ts --bundle --outfile=main.js --format=cjs --platform=node --target=node16 --watch"
+    "dev": "esbuild main.ts --bundle --outfile=main.js --format=cjs --platform=node --target=node16 --watch",
+    "typecheck": "tsc --noEmit -p .",
+    "package": "npm run build && dotx-plugin package",
+    "release:verify-version": "dotx-plugin verify-release",
+    "release:build": "npm run release:verify-version && npm run typecheck && npm run package"
   },
   "author": "Andreas Frøyland",
   "license": "MIT",
@@ -16,10 +19,15 @@
     "url": "https://github.com/ananords/dotx-mqtt-plugin.git"
   },
   "dependencies": {
-    "@dotmatrixlabs/dotx-plugin-sdk": "latest",
+    "@dotmatrixlabs/dotx-plugin-sdk": "^1.1.6",
     "mqtt": "^5.3.0"
   },
   "devDependencies": {
-    "esbuild": "^0.25.6"
+    "@types/node": "^20.19.43",
+    "esbuild": "^0.25.6",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

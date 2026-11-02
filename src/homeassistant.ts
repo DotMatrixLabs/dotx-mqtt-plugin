@@ -1,120 +1,103 @@
 import { MQTTClient } from './mqtt-client';
 import { HASensorConfig } from './types';
 
+export const HA_DISCOVERY_PREFIX = 'homeassistant';
+export const HA_STATUS_TOPIC = `${HA_DISCOVERY_PREFIX}/status`;
+
 /**
- * Home Assistant MQTT Discovery manager
+ * Home Assistant MQTT Discovery for the device's channels.
+ *
+ * Discovery configs are retained so entities survive broker and HA restarts,
+ * and reference the plugin's availability topic so HA shows them as
+ * "unavailable" (not deleted) while Dot X is closed.
  */
 export class HomeAssistantDiscovery {
-  private mqttClient: MQTTClient;
-  private topicPrefix: string;
-  private deviceName: string;
-  private deviceId: string;
-  private discoveredChannels: Set<number> = new Set();
+  private discoveredChannels = new Set<number>();
 
   constructor(
-    mqttClient: MQTTClient,
-    topicPrefix: string,
-    deviceName: string = 'DotX Device',
-    deviceId: string = 'dotx_device'
-  ) {
-    this.mqttClient = mqttClient;
-    this.topicPrefix = topicPrefix;
-    this.deviceName = deviceName;
-    this.deviceId = deviceId;
-  }
+    private mqttClient: MQTTClient,
+    private topicPrefix: string,
+    private deviceName = 'Dot X',
+    private deviceModel = 'Decker',
+    private deviceId = 'dotx_device'
+  ) {}
 
   updateTopicPrefix(topicPrefix: string) {
-    this.topicPrefix = topicPrefix;
+    if (topicPrefix !== this.topicPrefix) {
+      this.topicPrefix = topicPrefix;
+      this.discoveredChannels.clear();
+    }
   }
 
-  updateDeviceInfo(deviceName: string, devicePort: string) {
-    this.deviceName = deviceName;
-  }
-
-  private generateSensorConfig(channelIndex: number): HASensorConfig {
-    const uniqueId = `${this.deviceId}_channel_${channelIndex}`;
-    const stateTopic = `${this.topicPrefix}/channel/${channelIndex}`;
-
-    return {
-      name: `${this.deviceName} Channel ${channelIndex}`,
-      unique_id: uniqueId,
-      state_topic: stateTopic,
-      unit_of_measurement: '%',
-      value_template: '{{ value_json.value }}',
-      device: {
-        identifiers: [this.deviceId],
-        name: this.deviceName,
-        manufacturer: 'DotMatrixLabs',
-        model: 'Decker'
-      }
-    };
-  }
-
-  private getDiscoveryTopic(channelIndex: number): string {
-    return `homeassistant/sensor/${this.deviceId}/ch${channelIndex}/config`;
+  updateDeviceInfo(deviceName: string) {
+    if (deviceName && deviceName !== this.deviceModel) {
+      this.deviceModel = deviceName;
+      this.discoveredChannels.clear();
+    }
   }
 
   getStateTopic(channelIndex: number): string {
     return `${this.topicPrefix}/channel/${channelIndex}`;
   }
 
+  private getDiscoveryTopic(channelIndex: number): string {
+    return `${HA_DISCOVERY_PREFIX}/sensor/${this.deviceId}/ch${channelIndex}/config`;
+  }
+
+  private generateSensorConfig(channelIndex: number): HASensorConfig {
+    return {
+      // Shown in HA as "<device name> Channel N"; channels are 1-based for humans.
+      name: `Channel ${channelIndex + 1}`,
+      unique_id: `${this.deviceId}_channel_${channelIndex}`,
+      object_id: `${this.deviceId}_channel_${channelIndex + 1}`,
+      state_topic: this.getStateTopic(channelIndex),
+      availability_topic: this.mqttClient.getAvailabilityTopic(),
+      payload_available: 'online',
+      payload_not_available: 'offline',
+      unit_of_measurement: '%',
+      state_class: 'measurement',
+      icon: 'mdi:tune-vertical',
+      value_template: '{{ value_json.value }}',
+      device: {
+        identifiers: [this.deviceId],
+        name: this.deviceName,
+        manufacturer: 'DotMatrixLabs',
+        model: this.deviceModel,
+      },
+    };
+  }
+
+  /** Publish discovery for a channel the first time it is seen. */
+  async ensureDiscovered(channelIndex: number): Promise<void> {
+    if (this.discoveredChannels.has(channelIndex)) return;
+    await this.publishDiscovery(channelIndex);
+  }
+
   async publishDiscovery(channelIndex: number): Promise<void> {
-    if (!this.mqttClient.isConnected()) {
-      throw new Error('MQTT client not connected');
-    }
-
-    const discoveryTopic = this.getDiscoveryTopic(channelIndex);
-    const config = this.generateSensorConfig(channelIndex);
-    const payload = JSON.stringify(config);
-
-    await this.mqttClient.publishImmediate(discoveryTopic, payload, 1);
+    const payload = JSON.stringify(this.generateSensorConfig(channelIndex));
+    await this.mqttClient.publishImmediate(this.getDiscoveryTopic(channelIndex), payload, { qos: 1, retain: true });
     this.discoveredChannels.add(channelIndex);
   }
 
-  async removeDiscovery(channelIndex: number): Promise<void> {
-    if (!this.mqttClient.isConnected()) {
-      return; // Can't remove if not connected
-    }
-
-    const discoveryTopic = this.getDiscoveryTopic(channelIndex);
-
-    // Send empty payload to remove discovery
-    await this.mqttClient.publishImmediate(discoveryTopic, '', 1);
-    this.discoveredChannels.delete(channelIndex);
-  }
-
   async publishDiscoveryForChannels(channels: number[]): Promise<void> {
-    const promises = channels.map(ch => this.publishDiscovery(ch));
-    await Promise.all(promises);
+    await Promise.all(channels.map((ch) => this.publishDiscovery(ch)));
   }
 
-  async removeAllDiscoveries(): Promise<void> {
-    const channels = Array.from(this.discoveredChannels);
-    const promises = channels.map(ch => this.removeDiscovery(ch));
-    await Promise.all(promises);
+  /**
+   * Remove the entities from HA (empty retained payload). Only used when the
+   * user turns the integration off, not on every disconnect.
+   */
+  async removeDiscoveryForChannels(channels: number[]): Promise<void> {
+    await Promise.all(
+      channels.map((ch) =>
+        this.mqttClient.publishImmediate(this.getDiscoveryTopic(ch), '', { qos: 1, retain: true })
+      )
+    );
+    channels.forEach((ch) => this.discoveredChannels.delete(ch));
   }
 
-  async publishState(channelIndex: number, value: number): Promise<void> {
-    if (!this.mqttClient.isConnected()) {
-      throw new Error('MQTT client not connected');
-    }
-
-    // Ensure discovery is published for this channel
-    if (!this.discoveredChannels.has(channelIndex)) {
-      await this.publishDiscovery(channelIndex);
-    }
-
-    const stateTopic = this.getStateTopic(channelIndex);
-    const payload = JSON.stringify({ value: value.toFixed(2) });
-
-    await this.mqttClient.publish(stateTopic, payload);
-  }
-
-  getDiscoveredChannels(): number[] {
-    return Array.from(this.discoveredChannels);
-  }
-
-  clearTracking() {
+  /** Forget what was announced, e.g. after reconnecting or an HA restart. */
+  reset() {
     this.discoveredChannels.clear();
   }
 }

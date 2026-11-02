@@ -9,5 +9,5 @@
     "resolveJsonModule": true,
     "noEmit": true
   },
-  "include": ["**/*.ts"]
+  "include": ["main.ts", "src/**/*.ts"]
 }

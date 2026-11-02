@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -21,16 +24,16 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build
-        run: npm run build
-
-      - name: Package plugin
-        run: npx @dotmatrixlabs/dotx-plugin-sdk@latest package
+      # Checks manifest/package versions match the tag, typechecks, builds
+      # main.js and packages dist/mqtt-plugin.dotxplugin.
+      - name: Build release package
+        run: npm run release:build
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*.dotxplugin
+          fail_on_unmatched_files: true
           generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
