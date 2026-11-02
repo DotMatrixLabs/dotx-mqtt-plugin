@@ -16,7 +16,7 @@
   "description": "MQTT Publisher with Home Assistant integration for Dot X",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ananords/dotx-mqtt-plugin.git"
+    "url": "https://github.com/DotMatrixLabs/dotx-mqtt-plugin.git"
   },
   "dependencies": {
     "@dotmatrixlabs/dotx-plugin-sdk": "^1.1.6",
