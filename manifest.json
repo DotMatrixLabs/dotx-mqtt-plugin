@@ -11,9 +11,20 @@
     "net"
   ],
   "license": "MIT",
-  "repository": "https://github.com/ananords/dotx-mqtt-plugin",
-  "links": {
-    "homepage": "https://github.com/ananords/dotx-mqtt-plugin",
-    "bugs": "https://github.com/ananords/dotx-mqtt-plugin/issues"
-  }
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DotMatrixLabs/dotx-mqtt-plugin.git"
+  },
+  "links": [
+    {
+      "title": "GitHub",
+      "icon": "fa-brands fa-github",
+      "url": "https://github.com/DotMatrixLabs/dotx-mqtt-plugin"
+    },
+    {
+      "title": "Report Bug",
+      "icon": "fa-solid fa-bug",
+      "url": "https://github.com/DotMatrixLabs/dotx-mqtt-plugin/issues/new"
+    }
+  ]
 }

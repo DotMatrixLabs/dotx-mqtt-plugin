@@ -21,7 +21,7 @@ Install directly through the Dot X plugin marketplace.
 
 ### Manual Installation
 
-1. Download the latest `mqtt-plugin.dotxplugin` from the [Releases](https://github.com/ananords/dotx-mqtt-plugin/releases) page
+1. Download the latest `mqtt-plugin.dotxplugin` from the [Releases](https://github.com/DotMatrixLabs/dotx-mqtt-plugin/releases) page
 2. Install it from the Dot X plugin settings
 3. Enable the plugin, set your broker address, and press **Connect**
 
