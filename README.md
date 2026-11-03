@@ -51,7 +51,7 @@ Install directly through the Dot X plugin marketplace.
 ### Channel Selection
 
 - **Send All Channels**: All slider changes are published automatically
-- **Use System Util Button**: Use the "MQTT Channels" button in the action mapper to toggle individual channels
+- **Use System Util Button**: Use the "MQTT Channel" button in the action mapper to toggle individual channels
 
 ### Home Assistant Integration
 
@@ -63,7 +63,7 @@ Enable **Home Assistant Discovery** and each channel shows up as a sensor (0-100
 - Entities are created on the first slider movement after connecting (Dot X reports every channel on each update).
 - While Dot X is closed or loses connection, entities show as **unavailable** (they are not deleted).
 - When Home Assistant restarts, discovery is re-sent automatically (`homeassistant/status`).
-- Turning the switch off removes the entities from Home Assistant.
+- Turning the switch off removes the entities from Home Assistant (immediately if connected, otherwise on the next connect).
 
 ## MQTT Topics
 

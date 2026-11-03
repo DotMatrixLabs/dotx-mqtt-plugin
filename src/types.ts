@@ -33,7 +33,6 @@ export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'err
 export interface HASensorConfig {
   name: string;
   unique_id: string;
-  object_id: string;
   state_topic: string;
   availability_topic: string;
   payload_available: string;

@@ -13,6 +13,7 @@ export const HA_STATUS_TOPIC = `${HA_DISCOVERY_PREFIX}/status`;
  */
 export class HomeAssistantDiscovery {
   private discoveredChannels = new Set<number>();
+  private purging = false;
 
   constructor(
     private mqttClient: MQTTClient,
@@ -49,7 +50,6 @@ export class HomeAssistantDiscovery {
       // Shown in HA as "<device name> Channel N"; channels are 1-based for humans.
       name: `Channel ${channelIndex + 1}`,
       unique_id: `${this.deviceId}_channel_${channelIndex}`,
-      object_id: `${this.deviceId}_channel_${channelIndex + 1}`,
       state_topic: this.getStateTopic(channelIndex),
       availability_topic: this.mqttClient.getAvailabilityTopic(),
       payload_available: 'online',
@@ -74,6 +74,7 @@ export class HomeAssistantDiscovery {
   }
 
   async publishDiscovery(channelIndex: number): Promise<void> {
+    this.purging = false; // re-enabled mid-purge: don't clear what we publish now
     const payload = JSON.stringify(this.generateSensorConfig(channelIndex));
     await this.mqttClient.publishImmediate(this.getDiscoveryTopic(channelIndex), payload, { qos: 1, retain: true });
     this.discoveredChannels.add(channelIndex);
@@ -83,17 +84,43 @@ export class HomeAssistantDiscovery {
     await Promise.all(channels.map((ch) => this.publishDiscovery(ch)));
   }
 
+  /** Wildcard matching every discovery config this plugin publishes. */
+  getDiscoveryWildcard(): string {
+    return `${HA_DISCOVERY_PREFIX}/sensor/${this.deviceId}/+/config`;
+  }
+
+  isOwnDiscoveryTopic(topic: string): boolean {
+    return topic.startsWith(`${HA_DISCOVERY_PREFIX}/sensor/${this.deviceId}/`) && topic.endsWith('/config');
+  }
+
   /**
-   * Remove the entities from HA (empty retained payload). Only used when the
-   * user turns the integration off, not on every disconnect.
+   * Remove our entities from HA by clearing their retained discovery configs.
+   *
+   * The broker is the source of truth: after a restart the plugin doesn't know
+   * which channels it announced earlier, so subscribe to our discovery topics,
+   * clear every retained config the broker hands back, then unsubscribe.
+   * Only used when the integration is off, not on every disconnect.
    */
-  async removeDiscoveryForChannels(channels: number[]): Promise<void> {
-    await Promise.all(
-      channels.map((ch) =>
-        this.mqttClient.publishImmediate(this.getDiscoveryTopic(ch), '', { qos: 1, retain: true })
-      )
-    );
-    channels.forEach((ch) => this.discoveredChannels.delete(ch));
+  purgeDiscovery(windowMs = 2000) {
+    const wildcard = this.getDiscoveryWildcard();
+    this.purging = true;
+    this.discoveredChannels.clear();
+    this.mqttClient.subscribe(wildcard);
+    setTimeout(() => {
+      this.purging = false;
+      this.mqttClient.unsubscribe(wildcard);
+    }, windowMs);
+  }
+
+  /** Feed broker messages here; returns true if the message was handled. */
+  handleMessage(topic: string, payload: string): boolean {
+    if (!this.isOwnDiscoveryTopic(topic)) return false;
+    if (this.purging && payload) {
+      this.mqttClient
+        .publishImmediate(topic, '', { qos: 1, retain: true })
+        .catch((error) => console.error(`[MQTT Plugin] Clearing ${topic} failed:`, error));
+    }
+    return true;
   }
 
   /** Forget what was announced, e.g. after reconnecting or an HA restart. */
