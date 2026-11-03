@@ -1,7 +1,7 @@
 {
   "id": "mqtt-plugin",
   "name": "MQTT Publisher",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Publish device slider values to MQTT with Home Assistant integration",
   "author": "Andreas Frøyland",
   "dotxVersion": ">=1.0.0",
