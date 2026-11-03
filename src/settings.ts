@@ -243,7 +243,7 @@ export function buildSettingsUI(
         channelModeInfo.setStyle('info');
         updateChannelsSelectedList('all');
       } else {
-        channelModeInfo.setText('Use the "MQTT Channels" button in the action mapper to select which channels to publish. Click on individual channels to toggle them.');
+        channelModeInfo.setText('Use the "MQTT Channel" button in the action mapper to select which channels to publish. Click on individual channels to toggle them.');
         channelModeInfo.setStyle('warning');
         updateChannelsSelectedList('button');
       }
@@ -254,7 +254,7 @@ export function buildSettingsUI(
   const channelModeInfo = settings.addInfo('channelModeInfo')
     .setText(currentSettings.channelSelectionMode === 'all'
       ? 'All device slider changes will be published to MQTT automatically.'
-      : 'Use the "MQTT Channels" button in the action mapper to select which channels to publish. Click on individual channels to toggle them.')
+      : 'Use the "MQTT Channel" button in the action mapper to select which channels to publish. Click on individual channels to toggle them.')
     .setStyle(currentSettings.channelSelectionMode === 'all' ? 'info' : 'warning');
 
 

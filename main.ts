@@ -31,6 +31,7 @@ export default class MQTTPlugin extends Plugin {
 
     this.mqttClient.onConnectionChange((state, error) => this.handleConnectionChange(state, error));
     this.mqttClient.onMessage((topic, payload) => {
+      if (this.haDiscovery.handleMessage(topic, payload)) return;
       // Home Assistant announces itself after a restart; re-send discovery.
       if (topic === HA_STATUS_TOPIC && payload === 'online' && this.settings.homeAssistantEnabled) {
         console.log("[MQTT Plugin] Home Assistant came online, re-publishing discovery");
@@ -88,6 +89,9 @@ export default class MQTTPlugin extends Plugin {
       if (this.settings.homeAssistantEnabled) {
         this.mqttClient.subscribe(HA_STATUS_TOPIC);
         this.haDiscovery.reset();
+      } else {
+        // Also covers turning discovery off while disconnected.
+        this.haDiscovery.purgeDiscovery();
       }
       this.publishAllKnownChannels();
     } else if (state === 'disconnected' && this.wasConnected) {
@@ -145,9 +149,6 @@ export default class MQTTPlugin extends Plugin {
     });
   }
 
-  private knownChannels(): number[] {
-    return this.channelValues.map((v, i) => (v === undefined ? -1 : i)).filter((i) => i >= 0);
-  }
 
   private handleSaveSettings(newSettings: MQTTSettings) {
     const previous = this.settings;
@@ -166,9 +167,7 @@ export default class MQTTPlugin extends Plugin {
         this.publishAllKnownChannels();
       } else {
         this.mqttClient.unsubscribe(HA_STATUS_TOPIC);
-        this.haDiscovery.removeDiscoveryForChannels(this.knownChannels()).catch((error) =>
-          console.error("[MQTT Plugin] Removing HA discovery failed:", error)
-        );
+        this.haDiscovery.purgeDiscovery();
       }
     }
   }
